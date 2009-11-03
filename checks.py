@@ -204,13 +204,18 @@ class checks:
 	def getLoadAvrgs(self):
 		self.checksLogger.debug('getLoadAvrgs: start')
 		
-		if sys.platform == 'linux2':
-			self.checksLogger.debug('getLoadAvrgs: linux2')
+		# If Linux like procfs system is present and mounted we use loadavg, else we use uptime
+		if sys.platform == 'linux2' or (sys.platform.find('freebsd') != -1 and self.linuxProcFsLocation != False):
+			self.checksLogger.debug('getLoadAvrgs: %s' % ('linux2' if sys.platform == 'linux2' else 'freebsd (loadavg)'))
 			
 			try:
 				self.checksLogger.debug('getLoadAvrgs: attempting open')
 				
-				loadAvrgProc = open('/proc/loadavg', 'r')
+				if sys.platform == 'linux2':
+					loadAvrgProc = open('/proc/loadavg', 'r')
+				else:
+					loadAvrgProc = open(self.linuxProcFsLocation + '/loadavg', 'r')
+					
 				uptime = loadAvrgProc.readlines()
 				
 			except IOError, e:
@@ -222,6 +227,21 @@ class checks:
 			loadAvrgProc.close()
 			
 			uptime = uptime[0] # readlines() provides a list but we want a string
+		
+		elif sys.platform.find('freebsd') != -1 and self.linuxProcFsLocation == False:
+			self.checksLogger.debug('getLoadAvrgs: freebsd (uptime)')
+			
+			try:
+				self.checksLogger.debug('getLoadAvrgs: attempting Popen')
+				
+				uptime = subprocess.Popen(['uptime'], stdout=subprocess.PIPE, close_fds=True).communicate()[0]
+				
+			except Exception, e:
+				import traceback
+				self.checksLogger.error('getLoadAvrgs: exception = ' + traceback.format_exc())
+				return False
+				
+			self.checksLogger.debug('getLoadAvrgs: Popen success')
 			
 		elif sys.platform == 'darwin':
 			self.checksLogger.debug('getLoadAvrgs: darwin')
@@ -252,19 +272,26 @@ class checks:
 	def getMemoryUsage(self):
 		self.checksLogger.debug('getMemoryUsage: start')
 		
-		if sys.platform == 'linux2':
-			self.checksLogger.debug('getMemoryUsage: linux2')
+		# If Linux like procfs system is present and mounted we use meminfo, else we use "native" mode (vmstat and swapinfo)		
+		if sys.platform == 'linux2' or (sys.platform.find('freebsd') != -1 and self.linuxProcFsLocation != False):
+			self.checksLogger.debug('getMemoryUsage: %s' % ('linux2' if sys.platform == 'linux2' else 'freebsd (meminfo)'))
 			
 			try:
 				self.checksLogger.debug('getMemoryUsage: attempting open')
 				
-				meminfoProc = open('/proc/meminfo', 'r')
+				if sys.platform == 'linux2':
+					meminfoProc = open('/proc/meminfo', 'r')
+				else:
+					meminfoProc = open(self.linuxProcFsLocation + '/meminfo', 'r')
+				
 				lines = meminfoProc.readlines()
 				
 			except IOError, e:
 				self.checksLogger.error('getMemoryUsage: exception = ' + str(e))
 				return False
 				
+			self.checksLogger.debug('getMemoryUsage: Popen success, parsing')
+			
 			meminfoProc.close()
 			
 			self.checksLogger.debug('getMemoryUsage: open success, parsing')
@@ -338,7 +365,52 @@ class checks:
 			self.checksLogger.debug('getMemoryUsage: formatted (swap), completed, returning')
 			
 			return memData	
+			
+		elif sys.platform.find('freebsd') != -1 and self.linuxProcFsLocation == False:
+			self.checksLogger.debug('getMemoryUsage: freebsd (native)')
+			
+			try:
+				self.checksLogger.debug('getMemoryUsage: attempting Popen (sysctl)')				
+				physTotal = subprocess.Popen(['sysctl', '-n', 'hw.physmem'], stdout = subprocess.PIPE, close_fds = True).communicate()[0]
 				
+				self.checksLogger.debug('getMemoryUsage: attempting Popen (vmstat)')				
+				vmstat = subprocess.Popen(['vmstat', '-H'], stdout = subprocess.PIPE, close_fds = True).communicate()[0]
+				
+				self.checksLogger.debug('getMemoryUsage: attempting Popen (swapinfo)')
+				swapinfo = subprocess.Popen(['swapinfo', '-k'], stdout = subprocess.PIPE, close_fds = True).communicate()[0]
+
+			except Exception, e:
+				import traceback
+				self.checksLogger.error('getMemoryUsage: exception = ' + traceback.format_exc())
+				
+				return False	
+				
+			self.checksLogger.debug('getMemoryUsage: Popen success, parsing')
+
+			# First we parse the information about the real memory
+			lines = vmstat.split('\n')
+			physParts = re.findall(r'([0-9]\d+)', lines[2])
+	
+			physTotal = int(physTotal.strip()) / 1024 # physFree is returned in B, but we need KB so we convert it
+			physFree = int(physParts[1])
+			physUsed = int(physTotal - physFree)
+	
+			self.checksLogger.debug('getMemoryUsage: parsed vmstat')
+	
+			# And then swap
+			lines = swapinfo.split('\n')
+			swapParts = re.findall(r'(\d+)', lines[1])
+			
+			# Convert evrything to MB
+			physUsed = int(physUsed) / 1024
+			physFree = int(physFree) / 1024
+			swapUsed = int(swapParts[3]) / 1024
+			swapFree = int(swapParts[4]) / 1024
+	
+			self.checksLogger.debug('getMemoryUsage: parsed swapinfo, completed, returning')
+	
+			return {'physUsed' : physUsed, 'physFree' : physFree, 'swapUsed' : swapUsed, 'swapFree' : swapFree, 'cached' : 'NULL'}
+			
 		elif sys.platform == 'darwin':
 			self.checksLogger.debug('getMemoryUsage: darwin')
 			
@@ -368,7 +440,7 @@ class checks:
 			self.checksLogger.debug('getMemoryUsage: parsed sysctl, completed, returning')
 			
 			return {'physUsed' : physParts[3], 'physFree' : physParts[4], 'swapUsed' : swapParts[1], 'swapFree' : swapParts[2], 'cached' : 'NULL'}	
-					
+			
 		else:
 			return False
 	
@@ -713,7 +785,7 @@ class checks:
 			
 	def getNetworkTraffic(self):
 		self.checksLogger.debug('getNetworkTraffic: start')
-		
+
 		if sys.platform == 'linux2':
 			self.checksLogger.debug('getNetworkTraffic: linux2')
 			
@@ -863,13 +935,14 @@ class checks:
 	
 	def doChecks(self, sc, firstRun, systemStats=False):
 		self.checksLogger = logging.getLogger('checks')
+		self.linuxProcFsLocation = self.getMountedLinuxProcFsLocation()
 		
 		self.checksLogger.debug('doChecks: start')
 				
 		# Do the checks
 		apacheStatus = self.getApacheStatus()
 		diskUsage = self.getDiskUsage()
-		loadAvrgs = self.getLoadAvrgs()
+		loadAvrgs = self.getLoadAvrgs() #
 		memory = self.getMemoryUsage()
 		mysqlStatus = self.getMySQLStatus()
 		networkTraffic = self.getNetworkTraffic()
@@ -877,6 +950,7 @@ class checks:
 		processes = self.getProcesses()		
 		
 		self.checksLogger.debug('doChecks: checks success, build payload')
+		self.checksLogger.debug({'agentKey' : self.agentConfig['agentKey'], 'agentVersion' : self.agentConfig['version'], 'diskUsage' : diskUsage, 'loadAvrg' : loadAvrgs['1'], 'memPhysUsed' : memory['physUsed'], 'memPhysFree' : memory['physFree'], 'memSwapUsed' : memory['swapUsed'], 'memSwapFree' : memory['swapFree'], 'memCached' : memory['cached'], 'networkTraffic' : networkTraffic, 'processes' : processes})
 		
 		checksData = {'agentKey' : self.agentConfig['agentKey'], 'agentVersion' : self.agentConfig['version'], 'diskUsage' : diskUsage, 'loadAvrg' : loadAvrgs['1'], 'memPhysUsed' : memory['physUsed'], 'memPhysFree' : memory['physFree'], 'memSwapUsed' : memory['swapUsed'], 'memSwapFree' : memory['swapFree'], 'memCached' : memory['cached'], 'networkTraffic' : networkTraffic, 'processes' : processes}
 		
@@ -939,3 +1013,17 @@ class checks:
 		self.checksLogger.debug('doChecks: posted back, reschedule')
 		
 		sc.enter(self.agentConfig['checkFreq'], 1, self.doChecks, (sc, False))	
+		
+	def getMountedLinuxProcFsLocation(self):
+		self.checksLogger.debug('getLoadAvrgs: attempting to find mounted partitions')
+		
+		# Lets see if linux style procfs is mounted
+		mountedPartitions = subprocess.Popen(['mount'], stdout = subprocess.PIPE, close_fds = True).communicate()[0]
+		location = re.search(r'linprocfs on (.*?) \(.*?\)', mountedPartitions)
+		
+		if location == False:
+			return False
+		
+		# Yep, looks like Linux procfs file system is mounted
+		location = location.group(1)
+		return location
