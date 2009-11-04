@@ -1010,7 +1010,7 @@ class checks:
 		# Do the checks
 		apacheStatus = self.getApacheStatus()
 		diskUsage = self.getDiskUsage()
-		loadAvrgs = self.getLoadAvrgs() #
+		loadAvrgs = self.getLoadAvrgs()
 		memory = self.getMemoryUsage()
 		mysqlStatus = self.getMySQLStatus()
 		networkTraffic = self.getNetworkTraffic()
@@ -1083,15 +1083,15 @@ class checks:
 		sc.enter(self.agentConfig['checkFreq'], 1, self.doChecks, (sc, False))	
 		
 	def getMountedLinuxProcFsLocation(self):
-		self.checksLogger.debug('getLoadAvrgs: attempting to find mounted partitions')
+		self.checksLogger.debug('getLoadAvrgs: attempting to fetch mounted partitions')
 		
 		# Lets check if the Linux like style procfs is mounted
 		mountedPartitions = subprocess.Popen(['mount'], stdout = subprocess.PIPE, close_fds = True).communicate()[0]
 		location = re.search(r'linprocfs on (.*?) \(.*?\)', mountedPartitions)
 		
+		# Linux like procfs file system is not mounted so we return False, else we return mount point location
 		if location == None:
 			return False
-		
-		# Linux like procfs file system is mounted, return the mount point location
+
 		location = location.group(1)
 		return location
