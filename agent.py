@@ -52,6 +52,7 @@ try:
 	agentConfig['MySQLUser'] = config.get('Main', 'mysql_user')
 	agentConfig['MySQLPass'] = config.get('Main', 'mysql_pass')
 	agentConfig['nginxStatusUrl'] = config.get('Main', 'nginx_status_url')
+	agentConfig['latencyIpAddresses'] = config.items('LatencyMonitor')
 	
 	# Stats reporting
 	agentConfig['reportAnonStats'] = config.get('Main', 'report_anon_stats')

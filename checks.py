@@ -923,6 +923,88 @@ class checks:
 		
 			return False
 		
+	def getNetworkLatency(self):
+		self.checksLogger.debug('getNetworkLatency: start')
+		
+		if len(self.agentConfig['latencyIpAddresses']) > 0:	# Only start checks if any IPv4 / IPv6 address has been set in the config file
+			self.checksLogger.debug('getNetworkLatency: config set')
+			
+			if sys.platform == 'linux2':
+				self.checksLogger.debug('getNetworkLatency: linux2')
+				
+				packetStatsRe = re.compile(r'(\d+) packets transmitted, (\d+) received, (.*?)% packet loss, time (\d+)ms')
+				responseStatsRe = re.compile(r'rtt min/avg/max/mdev = (\d+\.\d+)/(\d+\.\d+)/(\d+\.\d+)/(\d+\.\d+) ms')
+				
+			elif sys.platform.find('freebsd') != -1:
+				self.checksLogger.debug('getNetworkLatency: freebsd')
+				
+				packetStatsRe = re.compile(r'(\d+) packets transmitted, (\d+) packets received, (.*?)% packet loss')
+				responseStatsRe = re.compile(r'round-trip min/avg/max/(stddev|std-dev) = (\d+\.\d+)/(\d+\.\d+)/(\d+\.\d+)/(\d+\.\d+) ms')
+				
+			else:		
+				self.checksLogger.debug('getNetworkLatency: other platform, returning')
+			
+				return False
+		
+			# Compile frequently used regular expressions
+			ipv4Re = re.compile(r'^(?:(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)$')
+			ipv6Re = re.compile(r'^(?:[A-F0-9]{1,4}:){7}[A-F0-9]{1,4}$', re.IGNORECASE)
+			
+			try:
+				response = {}
+				for entry in self.agentConfig['latencyIpAddresses']:
+					address = entry[1]
+
+					if re.match(ipv4Re, address) != None:
+						command = 'ping'
+					elif re.match(ipv6Re, address) != None:
+						command = 'ping6'
+					else:
+						# Not a valid IPv4 or IPv6 address, skip this iteration
+						continue
+
+					response[address] = subprocess.Popen([command, '-c', '5', address], stdout = subprocess.PIPE, close_fds = True).communicate()[0]
+			
+			except Exception, e:
+				import traceback
+				self.checksLogger.error('getNetworkLatency: exception = ' + traceback.format_exc())
+				
+				return False
+			
+		else:
+			self.checksLogger.debug('getNetworkLatency: config not set')
+			
+			return False
+		
+		self.checksLogger.debug('getNetworkLatency: Popen success, parsing')
+
+		latencyStatus = {}
+		
+		# Loop over responses and parse the data
+		for address in response:
+			packetStats = re.search(packetStatsRe, response[address])
+			responseStats = re.search(responseStatsRe, response[address])
+			
+			# Valid response
+			if packetStats != None:
+				latencyStatus[address] = {}
+				latencyStatus[address]['trans_packets'] = packetStats.group(1)
+				latencyStatus[address]['recv_packets'] = packetStats.group(2)
+				latencyStatus[address]['packet_loss'] = packetStats.group(3)
+				
+				if responseStats != None:
+					latencyStatus[address]['response_min'] = responseStats.group(2)
+					latencyStatus[address]['response_max'] = responseStats.group(4)
+					latencyStatus[address]['response_avg'] = responseStats.group(3)
+				else:
+					latencyStatus[address]['response_min'] = ''
+					latencyStatus[address]['response_max'] = ''
+					latencyStatus[address]['response_avg'] = ''
+					
+		self.checksLogger.debug('getNetworkLatency: completed, returning')
+				
+		return latencyStatus
+		
 	def getProcesses(self):
 		self.checksLogger.debug('getProcesses: start')
 		
@@ -1015,7 +1097,8 @@ class checks:
 		mysqlStatus = self.getMySQLStatus()
 		networkTraffic = self.getNetworkTraffic()
 		nginxStatus = self.getNginxStatus()
-		processes = self.getProcesses()		
+		processes = self.getProcesses()
+		latencyStatus = self.getNetworkLatency()	
 		
 		self.checksLogger.debug('doChecks: checks success, build payload')
 		self.checksLogger.debug({'agentKey' : self.agentConfig['agentKey'], 'agentVersion' : self.agentConfig['version'], 'diskUsage' : diskUsage, 'loadAvrg' : loadAvrgs['1'], 'memPhysUsed' : memory['physUsed'], 'memPhysFree' : memory['physFree'], 'memSwapUsed' : memory['swapUsed'], 'memSwapFree' : memory['swapFree'], 'memCached' : memory['cached'], 'networkTraffic' : networkTraffic, 'processes' : processes})
